@@ -282,25 +282,6 @@ fn build_open62541(src: PathBuf, encryption: Option<&EncryptionDst>) -> PathBuf 
         cmake
             .cflag("-idirafter/usr/include")
             .cflag(format!("-idirafter/usr/include/{arch}-linux-gnu"));
-
-        // Provide a shim for `<bits/stdio_lim.h>` which is a glibc-specific header that is not
-        // available in musl libc. `open62541` includes it directly in `eventloop_posix.h`. The
-        // standard constants it would define are already provided by standard headers (`<stdio.h>`
-        // and `<limits.h>`) that are included before this file in the same translation unit.
-        let out = PathBuf::from(env::var("OUT_DIR").expect("should have OUT_DIR"));
-        let shim_bits_dir = out.join("include-shim").join("bits");
-        fs::create_dir_all(&shim_bits_dir)
-            .expect("should create shim include directory for musl compatibility");
-        fs::write(
-            shim_bits_dir.join("stdio_lim.h"),
-            "/* Shim for musl libc compatibility.\n\
-             * The glibc-specific <bits/stdio_lim.h> is not available in musl libc.\n\
-             * The constants it defines are already provided by the standard headers\n\
-             * (<stdio.h> and <limits.h>) included earlier in the same translation unit.\n\
-             */\n",
-        )
-        .expect("should write bits/stdio_lim.h shim for musl compatibility");
-        cmake.cflag(format!("-idirafter{}", out.join("include-shim").display()));
     }
 
     if matches!(env::var("TARGET"), Ok(env) if env == "x86_64-unknown-linux-gnu") {
