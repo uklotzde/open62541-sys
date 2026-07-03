@@ -1,7 +1,7 @@
 #![expect(clippy::panic, reason = "panic only during build time")]
 
 use std::{
-    env,
+    env, fs,
     path::{Path, PathBuf},
 };
 
@@ -73,6 +73,19 @@ fn main() {
     if let Some(encryption_dst) = encryption_dst {
         encryption_dst.rustc_link_search();
         encryption_dst.rustc_link_lib();
+    }
+
+    if matches!(env::var("CARGO_CFG_TARGET_ENV"), Ok(env) if env == "musl") {
+        // Link `libgcc` to resolve `__gcc_personality_v0`. GCC-compiled `open62541` C files that
+        // use GCC's cleanup attribute emit a `DW.ref.__gcc_personality_v0` reference in a
+        // `.data.rel.local` section. This symbol lives in `libgcc.a`, which is part of the GCC
+        // runtime for the musl cross-toolchain. Rust's musl linker passes `-nodefaultlibs` and
+        // does not include `libgcc` automatically.
+        //
+        // IMPORTANT: This directive must appear *after* `cargo:rustc-link-lib=open62541` so that
+        // the static linker processes `-lgcc` after `-lopen62541`. With static archive linking,
+        // the library providing a symbol must be listed *after* the library that references it.
+        println!("cargo:rustc-link-lib=gcc");
     }
 
     let out = PathBuf::from(env::var("OUT_DIR").expect("should have OUT_DIR"));
@@ -269,6 +282,25 @@ fn build_open62541(src: PathBuf, encryption: Option<&EncryptionDst>) -> PathBuf 
         cmake
             .cflag("-idirafter/usr/include")
             .cflag(format!("-idirafter/usr/include/{arch}-linux-gnu"));
+
+        // Provide a shim for `<bits/stdio_lim.h>` which is a glibc-specific header that is not
+        // available in musl libc. `open62541` includes it directly in `eventloop_posix.h`. The
+        // standard constants it would define are already provided by standard headers (`<stdio.h>`
+        // and `<limits.h>`) that are included before this file in the same translation unit.
+        let out = PathBuf::from(env::var("OUT_DIR").expect("should have OUT_DIR"));
+        let shim_bits_dir = out.join("include-shim").join("bits");
+        fs::create_dir_all(&shim_bits_dir)
+            .expect("should create shim include directory for musl compatibility");
+        fs::write(
+            shim_bits_dir.join("stdio_lim.h"),
+            "/* Shim for musl libc compatibility.\n\
+             * The glibc-specific <bits/stdio_lim.h> is not available in musl libc.\n\
+             * The constants it defines are already provided by the standard headers\n\
+             * (<stdio.h> and <limits.h>) included earlier in the same translation unit.\n\
+             */\n",
+        )
+        .expect("should write bits/stdio_lim.h shim for musl compatibility");
+        cmake.cflag(format!("-idirafter{}", out.join("include-shim").display()));
     }
 
     if matches!(env::var("TARGET"), Ok(env) if env == "x86_64-unknown-linux-gnu") {
